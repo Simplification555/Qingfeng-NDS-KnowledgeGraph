@@ -72,7 +72,12 @@
     .pdf-toolbar strong { flex:1; }
     .pdf-toolbar a,.pdf-toolbar button { border:1px solid rgba(255,255,255,.4); border-radius:7px;
       padding:5px 9px; color:#fff; background:rgba(255,255,255,.1); text-decoration:none; cursor:pointer; }
-    #pdfFrame { flex:1; width:100%; border:0; background:#e9eeec; }
+    .pdf-page-info { min-width:76px; text-align:center; font-variant-numeric:tabular-nums; }
+    .pdf-viewer { position:relative; flex:1; overflow:auto; padding:18px; text-align:center; background:#dfe5e3; }
+    #pdfCanvas { display:none; max-width:100%; height:auto; margin:auto; background:#fff;
+      box-shadow:0 5px 22px rgba(16,42,51,.2); }
+    .pdf-status { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+      color:#50646b; font-size:15px; pointer-events:none; }
     .empty { padding:24px; color:var(--muted); }
     @media (max-width:1050px) { .layout { grid-template-columns:290px minmax(0,1fr); height:auto; }
       .sidebar,.graph-panel { height:calc(100vh - 140px); min-height:520px; }
@@ -111,10 +116,16 @@
   <div class="pdf-shell">
     <div class="pdf-toolbar">
       <strong id="pdfTitle">课程课件</strong>
+      <button id="prevPdf" aria-label="上一页">上一页</button>
+      <span id="pdfPageInfo" class="pdf-page-info">1 / 1199</span>
+      <button id="nextPdf" aria-label="下一页">下一页</button>
       <a id="pdfExternal" href="course.pdf" target="_blank" rel="noopener">新窗口打开</a>
       <button id="closePdf" aria-label="关闭课件预览">关闭</button>
     </div>
-    <iframe id="pdfFrame" title="《完全版ppt.pdf》课件预览"></iframe>
+    <div id="pdfViewer" class="pdf-viewer">
+      <div id="pdfStatus" class="pdf-status">正在载入课件…</div>
+      <canvas id="pdfCanvas" aria-label="《完全版ppt.pdf》课件页面"></canvas>
+    </div>
   </div>
 </div>
 <script>
@@ -162,12 +173,49 @@ function renderList(){
 }
 function relatedEdges(id){ return EDGES.filter(e=>e.source===id||e.target===id); }
 function selectNode(id){ selectedId=id; renderList(); renderDetail(); renderGraph(); }
-function openPdf(page=1){
-  const safePage=Math.max(1,Number(page)||1), url=`${PDF_URL}#page=${safePage}&zoom=page-width`;
-  el("pdfTitle").textContent=`《完全版ppt.pdf》· 第 ${safePage} 页`;
-  el("pdfFrame").src=url; el("pdfExternal").href=url; el("pdfModal").classList.add("open");
+let pdfDocumentPromise=null, currentPdfPage=1, pdfRenderToken=0;
+function getPdfDocument(){
+  if(!pdfDocumentPromise){
+    pdfDocumentPromise=import("./assets/pdf.min.js").then(pdfjs=>{
+      pdfjs.GlobalWorkerOptions.workerSrc="./assets/pdf.worker.min.js";
+      return pdfjs.getDocument({url:PDF_URL}).promise;
+    });
+  }
+  return pdfDocumentPromise;
 }
-function closePdf(){ el("pdfModal").classList.remove("open"); el("pdfFrame").src="about:blank"; }
+async function renderPdfPage(pageNumber){
+  const token=++pdfRenderToken, status=el("pdfStatus"), canvas=el("pdfCanvas");
+  status.style.display="flex"; status.textContent="正在载入课件…"; canvas.style.display="none";
+  try{
+    const document=await getPdfDocument();
+    const safePage=Math.min(document.numPages,Math.max(1,Number(pageNumber)||1));
+    currentPdfPage=safePage;
+    const page=await document.getPage(safePage);
+    if(token!==pdfRenderToken) return;
+    const base=page.getViewport({scale:1}), available=Math.max(320,el("pdfViewer").clientWidth-40);
+    const viewport=page.getViewport({scale:Math.min(2,available/base.width)});
+    const ratio=Math.min(window.devicePixelRatio||1,2), context=canvas.getContext("2d");
+    canvas.width=Math.floor(viewport.width*ratio); canvas.height=Math.floor(viewport.height*ratio);
+    canvas.style.width=`${Math.floor(viewport.width)}px`; canvas.style.height=`${Math.floor(viewport.height)}px`;
+    await page.render({canvasContext:context,viewport,transform:ratio===1?null:[ratio,0,0,ratio,0,0]}).promise;
+    if(token!==pdfRenderToken) return;
+    el("pdfTitle").textContent=`《完全版ppt.pdf》· 第 ${safePage} 页`;
+    el("pdfPageInfo").textContent=`${safePage} / ${document.numPages}`;
+    el("pdfExternal").href=`${PDF_URL}#page=${safePage}`;
+    status.style.display="none"; canvas.style.display="block";
+  }catch(error){
+    status.style.display="flex";
+    window.__pdfError=String(error?.stack||error);
+    status.textContent=`课件载入失败：${error?.message||error}。可使用“新窗口打开”。`;
+    console.error(error);
+  }
+}
+function openPdf(page=1){
+  const safePage=Math.max(1,Number(page)||1);
+  el("pdfModal").classList.add("open");
+  renderPdfPage(safePage);
+}
+function closePdf(){ pdfRenderToken+=1; el("pdfModal").classList.remove("open"); }
 function renderDetail(){
   const n=byId.get(selectedId), edges=relatedEdges(selectedId);
   if(!n){ el("detail").innerHTML='<div class="empty">请选择节点</div>'; return; }
@@ -214,6 +262,8 @@ function renderGraph(){
 }
 ["search","chapterFilter","typeFilter"].forEach(id=>el(id).addEventListener(id==="search"?"input":"change",renderList));
 el("openCourse").onclick=()=>openPdf(1);
+el("prevPdf").onclick=()=>renderPdfPage(currentPdfPage-1);
+el("nextPdf").onclick=()=>renderPdfPage(currentPdfPage+1);
 el("closePdf").onclick=closePdf;
 el("pdfModal").onclick=event=>{ if(event.target===el("pdfModal")) closePdf(); };
 document.addEventListener("keydown",event=>{ if(event.key==="Escape") closePdf(); });
